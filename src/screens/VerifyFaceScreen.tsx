@@ -1,8 +1,10 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { View, Image, Alert, StyleSheet, Text, Dimensions, Platform } from 'react-native';
-import { Camera, useCameraDevices, CameraDevice } from 'react-native-vision-camera';
-import { ActivityIndicator, FAB, ProgressBar, useTheme, Appbar } from 'react-native-paper';
+import { Camera, useCameraDevices, CameraDevice, useFrameProcessor } from 'react-native-vision-camera';
+import { ActivityIndicator, ProgressBar, useTheme, Appbar } from 'react-native-paper'; // FAB import removed
 import { identifyFace } from '../services/api';
+import { useFaceDetector } from 'react-native-vision-camera-face-detector';
+import { Worklets } from 'react-native-worklets-core';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../App';
 
@@ -16,10 +18,22 @@ export default function VerifyFaceScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(false);
   const [hasPermission, setHasPermission] = useState(false);
   const [imageUri, setImageUri] = useState<string | null>(null);
+  const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
+  const [faceDetectedUi, setFaceDetectedUi] = useState(false);
   const cameraRef = useRef<Camera>(null);
+  const isProcessingPhotoRef = useRef(false);
   const devices = useCameraDevices();
   const device: CameraDevice | undefined = devices.find((d: CameraDevice) => d.position === 'front');
   const theme = useTheme();
+
+  // Initialize face detector
+  const { detectFaces } = useFaceDetector({});
+
+  // Dynamic style for oval border based on face detection
+  const dynamicOvalStyle = {
+    ...styles.oval,
+    borderColor: faceDetectedUi ? '#4CAF50' : '#007bff', // Green when face detected, blue otherwise
+  };
 
   useEffect(() => {
     (async () => {
@@ -32,39 +46,75 @@ export default function VerifyFaceScreen({ navigation }: Props) {
   const _handleSearch = () => {};
   const _handleMore = () => {};
 
-  const handleVerify = async () => {
-    setProgress(0);
+  const triggerAutomaticPhotoCapture = async () => {
+    if (isProcessingPhotoRef.current || !cameraRef.current) return;
+
+    isProcessingPhotoRef.current = true;
+    setIsProcessingPhoto(true);
     setLoading(true);
-    if (cameraRef.current) {
-      try {
-        const photo = await cameraRef.current.takePhoto({});
-        setImageUri('file://' + photo.path);
-        setProgress(0.3);
+    setProgress(0);
+    // setFaceDetectedUi(true); // Removed: This will be handled by the frame processor
 
-        // Simula progreso mientras espera la respuesta real
-        const progressInterval = setInterval(() => {
-          setProgress(prev => (prev < 0.9 ? prev + 0.1 : prev));
-        }, 200);
+    try {
+      console.log('Taking photo automatically...');
+      const photo = await cameraRef.current.takePhoto({});
+      setImageUri('file://' + photo.path);
+      setProgress(0.3);
 
-        const res = await identifyFace({ uri: 'file://' + photo.path, type: 'image/jpeg', name: 'face.jpg' });
-        clearInterval(progressInterval);
-        setProgress(1);
-        setLoading(false);
-        navigation.replace('UserData', { user: res.data.user });
-      } catch (err) {
-        setLoading(false);
-        setProgress(0);
-        const errorMessage =
-          err && typeof err === 'object' && 'response' in err && err.response && typeof err.response === 'object' && 'data' in err.response && err.response.data && typeof err.response.data === 'object' && 'message' in err.response.data
-            ? (err.response.data.message as string)
-            : 'Error en la verificación facial';
-        Alert.alert('Error', errorMessage);
-      }
-    } else {
+      const progressInterval = setInterval(() => {
+        setProgress(prev => (prev < 0.9 ? prev + 0.1 : prev));
+      }, 200);
+
+      console.log('Sending photo to API...');
+      const res = await identifyFace({ uri: 'file://' + photo.path, type: 'image/jpeg', name: 'face.jpg' });
+      clearInterval(progressInterval);
+      setProgress(1);
+      console.log('API success, navigating to UserData');
+      navigation.replace('UserData', { user: res.data.user });
+    } catch (err) {
+      console.error('Automatic photo capture or API error:', err);
+      const errorMessage =
+        err && typeof err === 'object' && 'response' in err && err.response && typeof err.response === 'object' && 'data' in err.response && err.response.data && typeof err.response.data === 'object' && 'message' in err.response.data
+          ? (err.response.data.message as string)
+          : 'Error en la verificación facial automática';
+      Alert.alert('Error', errorMessage);
+      setProgress(0);
+    } finally {
       setLoading(false);
-      Alert.alert('Error', 'No se pudo acceder a la cámara');
+      setTimeout(() => {
+        setIsProcessingPhoto(false);
+        isProcessingPhotoRef.current = false;
+        setImageUri(null);
+        // setFaceDetectedUi(false); // Removed: Frame processor will handle this
+        console.log('Ready for new face detection.');
+      }, 5000);
     }
   };
+
+  const frameProcessor = useFrameProcessor((frame) => {
+    'worklet';
+    if (isProcessingPhotoRef.current) {
+      if (faceDetectedUi) {
+        Worklets.runOnJS(setFaceDetectedUi)(false);
+      }
+      return;
+    }
+
+    const detectedFaces = detectFaces(frame);
+    if (detectedFaces && detectedFaces.length > 0) {
+      if (!faceDetectedUi) {
+        Worklets.runOnJS(setFaceDetectedUi)(true);
+      }
+      isProcessingPhotoRef.current = true;
+      Worklets.runOnJS(triggerAutomaticPhotoCapture)();
+    } else {
+      if (faceDetectedUi) {
+        Worklets.runOnJS(setFaceDetectedUi)(false);
+      }
+    }
+  }, [detectFaces, faceDetectedUi]);
+
+  // const handleVerify = async () => { ... } // Function removed
 
   if (!device || !hasPermission) {
     return (
@@ -93,7 +143,7 @@ export default function VerifyFaceScreen({ navigation }: Props) {
       <View style={styles.container}>
         <Text style={styles.title}>Verificación de Rostro</Text>
         <View style={styles.ovalContainer}>
-          <View style={styles.oval}>
+          <View style={dynamicOvalStyle}>
             {!imageUri ? (
               <Camera
                 ref={cameraRef}
@@ -101,6 +151,8 @@ export default function VerifyFaceScreen({ navigation }: Props) {
                 device={device}
                 isActive={true}
                 photo={true}
+                frameProcessor={frameProcessor}
+                frameProcessorFps={3}
               />
             ) : (
               <Image source={{ uri: imageUri }} style={styles.image} />
@@ -124,14 +176,7 @@ export default function VerifyFaceScreen({ navigation }: Props) {
             style={{ marginTop: 16 }}
           />
         )}
-        <FAB
-          style={styles.fab}
-          icon="camera"
-          onPress={handleVerify}
-          color="#fff"
-          disabled={loading}
-          accessibilityLabel="Verificar Rostro"
-        />
+        {/* <FAB ... /> component removed */}
       </View>
     </>
   );
@@ -191,13 +236,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     textAlign: 'center',
   },
-  fab: {
-    position: 'absolute',
-    right: 32,
-    bottom: 120,
-    backgroundColor: '#007bff',
-    elevation: 4,
-  },
+  // fab: { ... } style definition removed
   permissionText: {
     fontSize: 18,
     color: '#B00020',
