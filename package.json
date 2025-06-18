@@ -22,7 +22,9 @@
     "react-native-safe-area-context": "^5.4.1",
     "react-native-screens": "^4.11.1",
     "react-native-vector-icons": "^10.2.0",
-    "react-native-vision-camera": "^4.6.4"
+    "react-native-vision-camera": "^4.6.4",
+    "react-native-vision-camera-face-detector": "github:luicfrr/react-native-vision-camera-face-detector#semver:^1.0.0",
+    "react-native-worklets-core": "^0.4.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
